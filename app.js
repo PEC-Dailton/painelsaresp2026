@@ -7,6 +7,20 @@ let attendanceChart = null;
 let dashboardRequest = 0;
 let isConnected = false;
 let searchTimer = null;
+const additionalGrades = ['2ª Itinerário', '3ª Itinerário'];
+const itinerarioSchedule = {
+  '3ª Itinerário': '06/11/2026',
+  '2ª Itinerário': '09/11/2026'
+};
+const gradeDisplayLabels = new Map([
+  ['1ª', '1ª série'],
+  ['2ª', '2ª série'],
+  ['3ª', '3ª série'],
+  ['2º', '2ª série'],
+  ['3º', '3ª série'],
+  ['2ª itinerário', '2ª Itinerário'],
+  ['3ª itinerário', '3ª Itinerário']
+]);
 
 const $ = id => document.getElementById(id);
 const fmt = value => Number(value || 0).toLocaleString('pt-BR');
@@ -40,8 +54,33 @@ function uniq(values) {
     .sort((left, right) => left.localeCompare(right, 'pt-BR', { numeric: true }));
 }
 
+function sortGrades(values) {
+  return [...new Set(values.filter(Boolean))].sort((left, right) => {
+    const gradeSortKey = value => {
+      const label = String(value).trim().toLocaleLowerCase('pt-BR');
+      const number = Number(label.match(/^\d+/)?.[0]);
+      if (label.includes('itinerário')) return number === 2 ? 3 : 4;
+      return ({ 1: 0, 2: 1, 3: 2, 6: 5, 7: 6, 8: 7, 9: 8 })[number] ?? 9;
+    };
+    return gradeSortKey(left) - gradeSortKey(right);
+  });
+}
+
+function gradeDisplayLabel(value) {
+  const grade = String(value ?? '').trim();
+  const normalized = grade.toLocaleLowerCase('pt-BR');
+  if (gradeDisplayLabels.has(normalized)) return gradeDisplayLabels.get(normalized);
+  const number = Number(normalized.match(/^\d+/)?.[0]);
+  if (normalized.includes('itinerário') && [2, 3].includes(number)) {
+    return `${number}ª Itinerário`;
+  }
+  if ([1, 2, 3].includes(number)) return `${number}ª série`;
+  if ([6, 7, 8, 9].includes(number)) return `${number}º ano`;
+  return grade;
+}
+
 function isGradeLabel(value) {
-  return /^\d+\s*[ºª](?:\s*(?:ano|série))?$/iu.test(String(value ?? '').trim());
+  return /^\d+\s*[ºª](?:\s*(?:ano|série|itinerário))?$/iu.test(String(value ?? '').trim());
 }
 
 function fill(id, values, firstLabel) {
@@ -49,7 +88,7 @@ function fill(id, values, firstLabel) {
   if (!element) return;
   const previous = element.value;
   element.innerHTML = `<option value="">${firstLabel}</option>` +
-    values.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+    values.map(value => `<option value="${esc(value)}">${esc(id === 'grade' ? gradeDisplayLabel(value) : value)}</option>`).join('');
   if (values.includes(previous)) element.value = previous;
 }
 
@@ -62,6 +101,18 @@ function fillTurmas() {
     (!grade || row.grade === grade)
   );
   fill('turma', uniq(available.map(row => row.turma)), 'Todas');
+}
+
+function syncItinerarioFilter(source) {
+  const grade = $('grade').value;
+  const day = $('day').value;
+  if (source === 'grade' && itinerarioSchedule[grade] && availableDates.includes(itinerarioSchedule[grade])) {
+    $('day').value = itinerarioSchedule[grade];
+  } else if (source === 'day') {
+    const scheduledGrade = Object.entries(itinerarioSchedule)
+      .find(([, scheduledDay]) => scheduledDay === day)?.[0];
+    if (scheduledGrade && availableGrades.includes(scheduledGrade)) $('grade').value = scheduledGrade;
+  }
 }
 
 function showNotice(message, isError = false) {
@@ -476,7 +527,7 @@ function aggregatePublishedData(rows, view, filters) {
     values.present += row.present;
     days.set(row.day, values);
   }
-  const gradeStats = uniq([
+  const gradeStats = sortGrades([
     ...availableGrades,
     ...gradeTotals.keys()
   ]).map(grade => {
@@ -558,18 +609,15 @@ function renderCharts(result) {
   $('attendanceChartHint').textContent = daySelected
     ? 'Distribuição dos registros filtrados na data selecionada'
     : 'Selecione um dia de aplicação para visualizar presentes e ausentes';
-  const labels = grades.map(item => item.grade);
+  const labels = grades.map(item => gradeDisplayLabel(item.grade));
   const participation = grades.map(item =>
     item.participation === null ? null : item.participation * 100
   );
-  const selectedGrade = $('grade').value;
   const maxParticipation = Math.max(100, ...participation);
   const participationColor = value => value === null
     ? '#d6d3d1'
-    : value >= 80 ? '#16a34a' : value >= 60 ? '#eab308' : '#dc2626';
-  const barColors = grades.map((item, index) =>
-    item.grade === selectedGrade ? '#c2410c' : participationColor(participation[index])
-  );
+    : value >= 80 ? '#16a34a' : value >= 56 ? '#eab308' : '#dc2626';
+  const barColors = participation.map(participationColor);
 
   if (gradeChart) gradeChart.destroy();
   gradeChart = new Chart($('gradeChart'), {
@@ -686,9 +734,9 @@ function absenceIndicator(row) {
   }
 
   const rate = row.absent / row.planned;
-  const status = rate <= 0.2
+  const status = rate <= 0.05
     ? 'low'
-    : rate <= 0.45 ? 'medium' : 'high';
+    : rate <= 0.25 ? 'medium' : 'high';
   const label = status === 'low'
     ? 'Baixa'
     : status === 'medium' ? 'Intermediária' : 'Alta';
@@ -744,7 +792,8 @@ function applyData(result) {
   availableSchools = Array.isArray(result.schools)
     ? result.schools
     : uniq(data.filter(row => row.type === 'TURMA').map(row => row.school));
-  availableGrades = uniq([
+  availableGrades = sortGrades([
+    ...additionalGrades,
     ...(result.grades || []),
     ...data.map(row => row.grade)
   ].filter(isGradeLabel));
@@ -762,6 +811,13 @@ function applyData(result) {
   availableDates = Array.isArray(result.dates) && result.dates.length
     ? result.dates
     : uniq(data.filter(row => row.type === 'TURMA').map(row => row.day));
+  availableDates = uniq([
+    ...availableDates,
+    ...Object.values(itinerarioSchedule)
+  ]).sort((left, right) =>
+    Date.UTC(...left.split('/').reverse().map(Number)) -
+    Date.UTC(...right.split('/').reverse().map(Number))
+  );
   fill('day', availableDates, 'Todos');
   fillTurmas();
   render();
@@ -881,6 +937,7 @@ $('logout').onclick = disconnect;
   const element = $(id);
   if (!element) return;
   element.addEventListener('change', () => {
+    if (id === 'grade' || id === 'day') syncItinerarioFilter(id);
     if (id === 'grade' || id === 'school') fillTurmas();
     render();
   });
@@ -908,3 +965,4 @@ setInterval(async () => {
     showNotice(error.message, true);
   }
 }, 60000);
+
