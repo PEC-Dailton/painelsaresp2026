@@ -145,7 +145,7 @@ def number_value(value):
 def is_grade_label(value):
     return bool(
         re.fullmatch(
-            r"\d+\s*[ºª](?:\s*(?:ano|série))?",
+            r"\d+\s*[ºª](?:\s*(?:ano|série|itinerário))?",
             text_value(value),
             flags=re.IGNORECASE,
         )
@@ -564,3 +564,4 @@ if __name__ == "__main__":
         print("\nServidor encerrado.")
     finally:
         server.server_close()
+
