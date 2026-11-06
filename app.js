@@ -12,6 +12,10 @@ const itinerarioSchedule = {
   '3ª Itinerário': '06/11/2026',
   '2ª Itinerário': '09/11/2026'
 };
+const itinerarioSourceGrades = {
+  '3ª Itinerário': '3º',
+  '2ª Itinerário': '2ª'
+};
 const gradeDisplayLabels = new Map([
   ['1ª', '1ª série'],
   ['2ª', '2ª série'],
@@ -77,6 +81,13 @@ function gradeDisplayLabel(value) {
   if ([1, 2, 3].includes(number)) return `${number}ª série`;
   if ([6, 7, 8, 9].includes(number)) return `${number}º ano`;
   return grade;
+}
+
+function gradeMatchesFilter(rowGrade, selectedGrade) {
+  if (!selectedGrade) return true;
+  return rowGrade === selectedGrade ||
+    (itinerarioSourceGrades[selectedGrade] &&
+      rowGrade === itinerarioSourceGrades[selectedGrade]);
 }
 
 function isGradeLabel(value) {
@@ -466,7 +477,7 @@ function aggregatePublishedData(rows, view, filters) {
   const viewRows = regionalOnly ? rows : rows.filter(row => row.type === view);
   const selectedRows = viewRows.filter(row => {
     if (filters.school && !regionalOnly && row.school !== filters.school) return false;
-    if (filters.grade && row.grade !== filters.grade) return false;
+    if (!gradeMatchesFilter(row.grade, filters.grade)) return false;
     if (filters.day && row.day !== filters.day) return false;
     const searchable = [row.school, row.grade, row.period, row.day].join(' ').toLocaleLowerCase('pt-BR');
     return !search || searchable.includes(search);
