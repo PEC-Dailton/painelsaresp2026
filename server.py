@@ -296,13 +296,22 @@ def aggregate_dashboard(rows, view, filters):
     turma_filter = filters.get("turma", "")
     day_filter = filters.get("day", "")
     search_filter = filters.get("search", "").casefold()
+    itinerary_source_grades = {
+        "3ª Itinerário": "3º",
+        "2ª Itinerário": "2ª",
+    }
 
     def matches(row, include_grade=True):
         if row.get("type") != "TURMA":
             return False
         if school_filter and row.get("school", "").casefold() != school_filter:
             return False
-        if include_grade and grade_filter and row.get("grade", "") != grade_filter:
+        if (
+            include_grade
+            and grade_filter
+            and row.get("grade", "") != grade_filter
+            and row.get("grade", "") != itinerary_source_grades.get(grade_filter)
+        ):
             return False
         if turma_filter and row.get("turma", "") != turma_filter:
             return False
@@ -564,4 +573,3 @@ if __name__ == "__main__":
         print("\nServidor encerrado.")
     finally:
         server.server_close()
-
