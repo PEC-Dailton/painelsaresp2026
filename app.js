@@ -1,3 +1,4 @@
+
 let data = [];
 let availableSchools = [];
 let availableGrades = [];
@@ -976,4 +977,3 @@ setInterval(async () => {
     showNotice(error.message, true);
   }
 }, 60000);
-
