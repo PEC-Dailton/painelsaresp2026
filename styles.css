@@ -285,6 +285,10 @@ main {
   flex: justify;
 }
 
+.filter select option {
+  padding: 8px 12px;
+}
+
 .filter select:focus,
 #search:focus {
   outline: 0;
@@ -874,3 +878,4 @@ tbody tr:hover {
     transition-duration: 0.01ms !important;
   }
 }
+
