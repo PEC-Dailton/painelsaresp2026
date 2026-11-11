@@ -27,6 +27,7 @@ cached_rows = None
 cached_updated_at = None
 
 
+# Acesso institucional e download da planilha do SharePoint.
 def configured():
     return bool(SHARE_URL) and os.name == "nt" and shutil.which("powershell.exe") is not None
 
@@ -77,6 +78,7 @@ try {
     return content
 
 
+# Leitura de células, datas e valores do arquivo Excel.
 def column_index(reference):
     result = 0
     for char in reference:
@@ -158,6 +160,7 @@ def excel_date(value):
     return text_value(value)
 
 
+# Conversão das abas Excel para registros de escola e turma.
 def parse_workbook(content):
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         workbook = ET.fromstring(archive.read("xl/workbook.xml"))
@@ -273,6 +276,7 @@ def parse_workbook(content):
         return rows, sorted(workbook_dates, key=lambda day: datetime.strptime(day, "%d/%m/%Y"))
 
 
+# Sincronização do SharePoint e agregação conforme os filtros solicitados.
 def sync_sharepoint_data():
     global cached_rows, cached_updated_at
     with sharepoint_sync_lock:
@@ -419,6 +423,7 @@ def aggregate_dashboard(rows, view, filters):
     }
 
 
+# Endpoints HTTP do painel e inicialização do servidor local.
 class DashboardHandler(BaseHTTPRequestHandler):
     def valid_host(self):
         allowed = {f"{HOST}:{PORT}".lower(), f"localhost:{PORT}".lower()}
@@ -455,6 +460,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             content = (ROOT / "styles.css").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/css; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        if path == "/assets/ure-itapevi-logo.png":
+            content = (ROOT / "assets" / "ure-itapevi-logo.png").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
