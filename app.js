@@ -1,17 +1,26 @@
 
+// Estado compartilhado e configuração das fontes de dados.
 let data = [];
 let availableSchools = [];
 let availableGrades = [];
 let availableDates = [];
+let tableRows = [];
 let gradeChart = null;
 let attendanceChart = null;
 let dashboardRequest = 0;
 let isConnected = false;
 let searchTimer = null;
 const additionalGrades = ['2ª Itinerário', '3ª Itinerário'];
-const itinerarioSchedule = {
-  '3ª Itinerário': '06/11/2026',
-  '2ª Itinerário': '09/11/2026'
+const applicationSchedule = {
+  '1ª': ['12/11/2026', '13/11/2026'],
+  '2ª': ['10/11/2026', '11/11/2026'],
+  '3ª': ['04/11/2026', '05/11/2026'],
+  '2ª Itinerário': ['09/11/2026'],
+  '3ª Itinerário': ['06/11/2026'],
+  '6º': ['18/11/2026', '19/11/2026'],
+  '7º': ['26/11/2026', '27/11/2026'],
+  '8º': ['30/11/2026', '01/12/2026'],
+  '9º': ['28/10/2026', '29/10/2026']
 };
 const itinerarioSourceGrades = {
   '3ª Itinerário': '3º',
@@ -44,6 +53,7 @@ const pct = value => (value * 100).toLocaleString('pt-BR', {
   minimumFractionDigits: 1
 }) + '%';
 
+// Utilitários de formatação e normalização dos filtros.
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;',
@@ -91,6 +101,17 @@ function gradeMatchesFilter(rowGrade, selectedGrade) {
       rowGrade === itinerarioSourceGrades[selectedGrade]);
 }
 
+function scheduledDatesForGrade(grade) {
+  const normalized = String(grade || '').trim().toLocaleLowerCase('pt-BR');
+  const match = normalized.match(/^(\d+)\s*[ºª]/);
+  if (!match) return [];
+  const number = match[1];
+  const key = normalized.includes('itinerário')
+    ? `${number}ª Itinerário`
+    : `${number}${['6', '7', '8', '9'].includes(number) ? 'º' : 'ª'}`;
+  return applicationSchedule[key] || [];
+}
+
 function isGradeLabel(value) {
   return /^\d+\s*[ºª](?:\s*(?:ano|série|itinerário))?$/iu.test(String(value ?? '').trim());
 }
@@ -102,6 +123,27 @@ function fill(id, values, firstLabel) {
   element.innerHTML = `<option value="">${firstLabel}</option>` +
     values.map(value => `<option value="${esc(value)}">${esc(id === 'grade' ? gradeDisplayLabel(value) : value)}</option>`).join('');
   if (values.includes(previous)) element.value = previous;
+}
+
+function datesForGrade(grade) {
+  if (!grade) return availableDates;
+  const scheduledDates = scheduledDatesForGrade(grade);
+  if (scheduledDates.length) return scheduledDates;
+  const synchronizedDates = new Set(data
+    .filter(row =>
+      gradeMatchesFilter(row.grade, grade) &&
+      ['initial', 'transfers', 'evaded', 'planned', 'present', 'absent']
+        .some(metric => Number(row[metric]) > 0)
+    )
+    .map(row => row.day));
+  return availableDates.filter(day => synchronizedDates.has(day));
+}
+
+function fillAvailableDays() {
+  const dates = datesForGrade($('grade').value);
+  const selectedDay = $('day').value;
+  fill('day', dates, 'Todos');
+  if (selectedDay && !dates.includes(selectedDay)) $('day').value = '';
 }
 
 function fillTurmas() {
@@ -118,15 +160,26 @@ function fillTurmas() {
 function syncItinerarioFilter(source) {
   const grade = $('grade').value;
   const day = $('day').value;
-  if (source === 'grade' && itinerarioSchedule[grade] && availableDates.includes(itinerarioSchedule[grade])) {
-    $('day').value = itinerarioSchedule[grade];
+  const itineraryDates = scheduledDatesForGrade(grade);
+  if (source === 'grade' && normalizedGradeIsItinerary(grade) &&
+      itineraryDates.length && datesForGrade(grade).includes(itineraryDates[0])) {
+    $('day').value = itineraryDates[0];
   } else if (source === 'day') {
-    const scheduledGrade = Object.entries(itinerarioSchedule)
-      .find(([, scheduledDay]) => scheduledDay === day)?.[0];
-    if (scheduledGrade && availableGrades.includes(scheduledGrade)) $('grade').value = scheduledGrade;
+    const scheduledGrade = Object.keys(applicationSchedule)
+      .find(candidate => normalizedGradeIsItinerary(candidate) &&
+        scheduledDatesForGrade(candidate).includes(day));
+    if (scheduledGrade && availableGrades.includes(scheduledGrade) &&
+        datesForGrade(scheduledGrade).includes(day)) {
+      $('grade').value = scheduledGrade;
+    }
   }
 }
 
+function normalizedGradeIsItinerary(grade) {
+  return String(grade || '').toLocaleLowerCase('pt-BR').includes('itinerário');
+}
+
+// Avisos de sincronização, qualidade e disponibilidade dos dados.
 function showNotice(message, isError = false) {
   $('notice').classList.toggle('error', isError);
   $('notice').textContent = message;
@@ -139,8 +192,15 @@ function missingApiError() {
   );
 }
 
-function showQualityNotice(quality) {
+function showQualityNotice(quality, result) {
   const messages = [];
+  const filters = currentFilters();
+  if (!result.rows.length && filters.school && filters.grade && filters.day) {
+    messages.push(
+      `Não há dados preenchidos na planilha para ${filters.grade} na unidade ` +
+      `${filters.school} em ${filters.day}. Verifique a aba do itinerário na planilha Google.`
+    );
+  }
   if (quality.negativeAbsences) {
     messages.push(
       `${fmt(quality.negativeAbsences)} registro(s) da base têm ausência negativa; ` +
@@ -154,7 +214,10 @@ function showQualityNotice(quality) {
     );
   }
   if (messages.length) {
-    showNotice(messages.join(' '), true);
+    showNotice(
+      messages.join(' '),
+      Boolean(quality.negativeAbsences || quality.presentOverPlanned)
+    );
   } else if (sheetCsvUrl && $('school').value && isRegionalCsvData()) {
     showNotice(
       'Unidade selecionada para visualização. A fonte atual contém somente totais regionais; ' +
@@ -234,6 +297,7 @@ async function requestJson(url, options = {}) {
   return result;
 }
 
+// Leitura do CSV publicado e conversão para o formato interno do painel.
 function parseCsv(text) {
   const rows = [];
   let row = [];
@@ -472,6 +536,7 @@ async function loadPublishedSheet() {
   };
 }
 
+// Aplicação dos filtros e consolidação dos totais e séries do gráfico.
 function aggregatePublishedData(rows, view, filters) {
   const search = String(filters.search || '').toLocaleLowerCase('pt-BR');
   const regionalOnly = rows.length > 0 && rows.every(row => row.school === 'Total regional');
@@ -579,6 +644,7 @@ function currentFilters() {
   };
 }
 
+// Atualização da interface: resumo, indicadores, gráficos e tabela.
 function updatePrintSummary() {
   const filters = currentFilters();
   const labels = [
@@ -614,10 +680,9 @@ function setMetrics(result) {
 }
 
 function renderCharts(result) {
-  const grades = result.gradeStats;
+  const grades = result.gradeStats.filter(item => isGradeLabel(item.grade));
   const daySelected = Boolean($('day').value);
-  $('gradeChartHint').textContent =
-    'Média da participação por dia de aplicação para cada série; séries sem dados não exibem ponto';
+  $('gradeChartHint').textContent = 'Média da participação por dia de aplicação para cada ano/série';
   $('attendanceChartHint').textContent = daySelected
     ? 'Distribuição dos registros filtrados na data selecionada'
     : 'Selecione um dia de aplicação para visualizar presentes e ausentes';
@@ -628,7 +693,7 @@ function renderCharts(result) {
   const maxParticipation = Math.max(100, ...participation);
   const participationColor = value => value === null
     ? '#d6d3d1'
-    : value >= 80 ? '#16a34a' : value >= 56 ? '#eab308' : '#dc2626';
+    : value >= 80 ? '#16a34a' : '#dc2626';
   const barColors = participation.map(participationColor);
 
   if (gradeChart) gradeChart.destroy();
@@ -692,6 +757,8 @@ function renderCharts(result) {
 }
 
 function renderTable(rows) {
+  tableRows = rows;
+  $('downloadSheet').disabled = rows.length === 0;
   $('count').textContent = `${fmt(rows.length)} registros consolidados`;
   if (!rows.length) {
     $('table').innerHTML = '<div class="empty">A planilha não tem dados preenchidos para os filtros selecionados.</div>';
@@ -702,13 +769,13 @@ function renderTable(rows) {
     const turmaView = $('type').value === 'TURMA' && !isRegionalCsvData();
     const schoolHeading = isRegionalCsvData() ? 'Abrangência' : 'Unidade Escolar';
     $('table').innerHTML = `<table><thead><tr>
-      <th>${schoolHeading}</th><th>Ano/Série</th>${turmaView ? '<th>Turma</th>' : ''}<th>Período</th><th>Dia de aplicação</th>
+      <th class="school-column">${schoolHeading}</th><th>Ano/Série</th>${turmaView ? '<th>Turma</th>' : ''}<th>Período</th><th>Dia de aplicação</th>
       <th>Total Alunos Prev. Inicial</th><th>Total Alunos Transferidos</th>
       <th>Total Alunos Evadidos</th><th>Total Alunos Prev. Final</th>
       <th>Presentes</th><th>Ausentes</th><th>% Participação</th><th>% Ausentes</th>
     </tr></thead><tbody>${rows.slice(0, 1200).map(row => {
       return `<tr>
-        <td>${esc(row.school)}</td><td>${esc(row.grade || '—')}</td>
+        <td class="school-column">${esc(row.school)}</td><td>${esc(row.grade || '—')}</td>
         ${turmaView ? `<td>${esc(row.turma || '—')}</td>` : ''}
         <td>${esc(row.period || '—')}</td><td>${esc(row.day || '—')}</td>
         <td>${fmt(row.initial)}</td><td>${fmt(row.transfers)}</td>
@@ -723,13 +790,13 @@ function renderTable(rows) {
 
   const schoolHeading = sheetCsvUrl && isRegionalCsvData() ? 'Abrangência' : 'Unidade Escolar';
   $('table').innerHTML = `<table><thead><tr>
-    <th>Visão</th><th>Ano/Série</th><th>${schoolHeading}</th><th>Turma</th>
+    <th>Visão</th><th>Ano/Série</th><th class="school-column">${schoolHeading}</th><th>Turma</th>
     <th>Período</th><th>Data</th><th>Previsto inicial</th><th>Transferidos</th>
     <th>Evadidos</th><th>Previsto final</th><th>Presentes</th><th>Ausentes</th>
     <th>Participação</th><th>% Ausentes</th>
   </tr></thead><tbody>${rows.slice(0, 1200).map(row => `<tr>
     <td>${esc(sheetCsvUrl && isRegionalCsvData() ? 'Regional' : row.type === 'ESCOLA' ? 'Escola' : 'Turma')}</td>
-    <td>${esc(row.grade || '—')}</td><td>${esc(row.school)}</td>
+    <td>${esc(row.grade || '—')}</td><td class="school-column">${esc(row.school)}</td>
     <td>${esc(row.turma || '—')}</td><td>${esc(row.period || '—')}</td>
     <td>${esc(row.day || '—')}</td><td>${fmt(row.initial)}</td>
     <td>${fmt(row.transfers)}</td><td>${fmt(row.evaded)}</td>
@@ -740,15 +807,76 @@ function renderTable(rows) {
   </tr>`).join('')}</tbody></table>`;
 }
 
+function csvCell(value) {
+  const text = String(value ?? '');
+  const safeText = /^[\t\r\n ]*[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replace(/"/g, '""')}"`;
+}
+
+function downloadFilteredRows() {
+  if (!tableRows.length) return;
+
+  const regionalData = sheetCsvUrl && isRegionalCsvData();
+  const schoolHeading = regionalData ? 'Abrangência' : 'Unidade Escolar';
+  const turmaView = sheetCsvUrl && $('type').value === 'TURMA' && !regionalData;
+  const headers = sheetCsvUrl
+    ? [
+      schoolHeading, 'Ano/Série', ...(turmaView ? ['Turma'] : []), 'Período',
+      'Dia de aplicação', 'Total Alunos Prev. Inicial', 'Total Alunos Transferidos',
+      'Total Alunos Evadidos', 'Total Alunos Prev. Final', 'Presentes', 'Ausentes',
+      '% Participação', '% Ausentes'
+    ]
+    : [
+      'Visão', 'Ano/Série', schoolHeading, 'Turma', 'Período', 'Data',
+      'Previsto inicial', 'Transferidos', 'Evadidos', 'Previsto final',
+      'Presentes', 'Ausentes', 'Participação', '% Ausentes'
+    ];
+  const records = tableRows.map(row => {
+    const participation = row.planned ? pct(row.present / row.planned) : '—';
+    const absence = row.planned ? pct(row.absent / row.planned) : '—';
+    const metrics = [
+      fmt(row.initial), fmt(row.transfers), fmt(row.evaded), fmt(row.planned),
+      fmt(row.present), fmt(row.absent), participation, absence
+    ];
+    return sheetCsvUrl
+      ? [
+        row.school, row.grade || '—', ...(turmaView ? [row.turma || '—'] : []),
+        row.period || '—', row.day || '—', ...metrics
+      ]
+      : [
+        regionalData ? 'Regional' : row.type === 'ESCOLA' ? 'Escola' : 'Turma',
+        row.grade || '—', row.school, row.turma || '—', row.period || '—',
+        row.day || '—', ...metrics
+      ];
+  });
+  const csv = '\uFEFF' + [headers, ...records]
+    .map(record => record.map(csvCell).join(';'))
+    .join('\r\n');
+  const today = new Date();
+  const date = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0')
+  ].join('-');
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  link.href = url;
+  link.download = `detalhamento-aplicacao-${date}.csv`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function absenceIndicator(row) {
   if (!row.planned) {
     return '<span class="absence-status absence-status-na">—</span>';
   }
 
   const rate = row.absent / row.planned;
-  const status = rate <= 0.05
+  const status = rate < 0.01
     ? 'low'
-    : rate <= 0.25 ? 'medium' : 'high';
+    : rate <= 0.20 ? 'medium' : 'high';
   const label = status === 'low'
     ? 'Baixa'
     : status === 'medium' ? 'Intermediária' : 'Alta';
@@ -765,10 +893,8 @@ function participationIndicator(row) {
   }
 
   const rate = row.present / row.planned;
-  const status = rate >= 0.8 ? 'high' : rate >= 0.6 ? 'medium' : 'low';
-  const label = status === 'high'
-    ? 'Alta'
-    : status === 'medium' ? 'Atenção' : 'Baixa';
+  const status = rate >= 0.8 ? 'high' : 'low';
+  const label = status === 'high' ? 'Alta' : 'Baixa';
 
   return `<span class="participation-status participation-status-${status}" ` +
     `aria-label="Participação ${label}: ${pct(rate)}" title="Participação ${label}">` +
@@ -776,6 +902,7 @@ function participationIndicator(row) {
     `${pct(rate)}</span>`;
 }
 
+// Busca, validação e estado da conexão com as fontes de dados.
 async function render() {
   const requestId = ++dashboardRequest;
   updatePrintSummary();
@@ -788,10 +915,12 @@ async function render() {
     setMetrics(result);
     renderCharts(result);
     renderTable(result.rows);
-    showQualityNotice(result.quality);
+    showQualityNotice(result.quality, result);
   } catch (error) {
     if (requestId !== dashboardRequest) return;
     showNotice(error.message, true);
+    tableRows = [];
+    $('downloadSheet').disabled = true;
     $('table').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
   }
 }
@@ -825,12 +954,12 @@ function applyData(result) {
     : uniq(data.filter(row => row.type === 'TURMA').map(row => row.day));
   availableDates = uniq([
     ...availableDates,
-    ...Object.values(itinerarioSchedule)
+    ...Object.values(applicationSchedule).flat()
   ]).sort((left, right) =>
     Date.UTC(...left.split('/').reverse().map(Number)) -
     Date.UTC(...right.split('/').reverse().map(Number))
   );
-  fill('day', availableDates, 'Todos');
+  fillAvailableDays();
   fillTurmas();
   render();
   $('login').hidden = true;
@@ -942,6 +1071,7 @@ async function disconnect() {
   }
 }
 
+// Eventos dos controles do painel e atualização automática.
 $('login').onclick = startLogin;
 $('refresh').onclick = loadData;
 $('logout').onclick = disconnect;
@@ -949,7 +1079,14 @@ $('logout').onclick = disconnect;
   const element = $(id);
   if (!element) return;
   element.addEventListener('change', () => {
-    if (id === 'grade' || id === 'day') syncItinerarioFilter(id);
+    if (id === 'grade') {
+      fillAvailableDays();
+      syncItinerarioFilter(id);
+    }
+    if (id === 'day') {
+      syncItinerarioFilter(id);
+      fillAvailableDays();
+    }
     if (id === 'grade' || id === 'school') fillTurmas();
     render();
   });
@@ -962,6 +1099,7 @@ $('downloadPdf').addEventListener('click', () => {
   updatePrintSummary();
   window.print();
 });
+$('downloadSheet').addEventListener('click', downloadFilteredRows);
 
 check();
 setInterval(async () => {
@@ -977,3 +1115,4 @@ setInterval(async () => {
     showNotice(error.message, true);
   }
 }, 60000);
+
